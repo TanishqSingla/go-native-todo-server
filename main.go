@@ -7,7 +7,6 @@ import (
 	"log"
 	"net/http"
 
-	"github.com/google/uuid"
 	_ "github.com/mattn/go-sqlite3"
 )
 
@@ -29,13 +28,13 @@ func (p *ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type TodoHandler struct{}
 
 type List struct {
-	id          string
+	Id          int8 `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
 
 type Todo struct {
-	id          string
+	Id          int8 `json:"id"`
 	Description string `json:"description"`
 	ListId      string `json:"listId"`
 }
@@ -85,8 +84,8 @@ func main() {
 	}
 
 	initTableQuery := `
-CREATE TABLE IF NOT EXISTS lists (name TEXT, description TEXT, id TEXT PRIMARY KEY);
-CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, description TEXT, listId TEXT, FOREIGN KEY(listId) REFERENCES lists(id));
+CREATE TABLE IF NOT EXISTS lists (name TEXT, description TEXT, id INTEGER PRIMARY KEY AUTOINCREMENT);
+CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT, listId TEXT, FOREIGN KEY(listId) REFERENCES lists(id));
 `
 
 	_, initDbError := db.Exec(initTableQuery)
@@ -124,15 +123,23 @@ CREATE TABLE IF NOT EXISTS todos (id TEXT PRIMARY KEY, description TEXT, listId 
 					return
 				}
 
-				createListQuery := fmt.Sprintf(`INSERT INTO lists (name, description, id) VALUES('%s', '%s', '%s')`, newList.Name, newList.Description, uuid.NewString())
+				createListQuery := fmt.Sprintf(`INSERT INTO lists (name, description) VALUES('%s', '%s')`, newList.Name, newList.Description)
 
-				_, dbErr := db.Exec(createListQuery)
+				result, dbErr := db.Exec(createListQuery)
 
 				if dbErr != nil {
-					errorResponse(w, "Internal Server Error", http.StatusInternalServerError)
+					errorResponse(w, "Unable to create row", http.StatusInternalServerError)
 					log.Fatal(err.Error())
 					return
 				}
+				resultId, _ := result.LastInsertId()
+				newList.Id = int8(resultId)
+
+				newListJson, _ := json.Marshal(newList)
+
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				w.Write(newListJson)
 
 				return
 			}
