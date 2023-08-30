@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strconv"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -16,8 +17,27 @@ type ListHandler struct{}
 func (p *ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	id := r.URL.Path[6:]
 
-	if r.Method == "GET" {
-		fmt.Fprintf(w, "opening %s...", id)
+	if r.Method == http.MethodGet {
+		listId, err := strconv.Atoi(id)
+
+		if err != nil {
+			errorResponse(w, "Invalid id", http.StatusUnprocessableEntity)
+			return
+		}
+
+		selectListQuery := fmt.Sprintf(`SELECT id, name, description FROM lists WHERE id = %d LIMIT 1;`, listId)
+
+		row := db.QueryRow(selectListQuery)
+
+		fetchedList := List{}
+
+		row.Scan(&fetchedList.Id, &fetchedList.Name, &fetchedList.Description)
+
+		fetchedListJson, _:= json.Marshal(fetchedList)
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(200)
+		w.Write(fetchedListJson)
 		return
 	}
 
@@ -69,14 +89,17 @@ func errorResponse(w http.ResponseWriter, message string, httpStatusCode int) {
 	w.Write(jsonResponse)
 }
 
+var db *sql.DB
+var dbErr error
+
 func main() {
 	newMux := http.NewServeMux()
 
-	db, err := sql.Open("sqlite3", "todo.db")
+	db, dbErr = sql.Open("sqlite3", "todo.db")
 	defer db.Close()
 
-	if err != nil {
-		log.Fatal(err)
+	if dbErr != nil {
+		log.Fatal(dbErr)
 	}
 
 	if db != nil {
