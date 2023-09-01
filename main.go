@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strconv"
+	"strings"
 
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -15,10 +16,10 @@ import (
 type ListHandler struct{}
 
 func (p *ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	id := r.URL.Path[6:]
+	pathname := r.URL.Path[6:]
 
 	if r.Method == http.MethodGet {
-		listId, err := strconv.Atoi(id)
+		listId, err := strconv.Atoi(pathname)
 
 		if err != nil {
 			errorResponse(w, "Invalid id", http.StatusUnprocessableEntity)
@@ -26,19 +27,77 @@ func (p *ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 
 		selectListQuery := fmt.Sprintf(`SELECT id, name, description FROM lists WHERE id = %d LIMIT 1;`, listId)
+		selectTodoQuery := fmt.Sprintf(`SELECT id, description, status FROM todos WHERE listId = %d LIMIT 1`, listId)
 
-		row := db.QueryRow(selectListQuery)
+		listRow := db.QueryRow(selectListQuery)
+		todoRows, todoErr := db.Query(selectTodoQuery)
+
+		if todoErr != nil {
+			log.Fatal("connection error", todoErr.Error())
+		}
 
 		fetchedList := List{}
+		fetchedTodos := []Todo{}
 
-		row.Scan(&fetchedList.Id, &fetchedList.Name, &fetchedList.Description)
+		listRow.Scan(&fetchedList.Id, &fetchedList.Name, &fetchedList.Description)
 
-		fetchedListJson, _:= json.Marshal(fetchedList)
+		for todoRows.Next() {
+			todo := Todo{}
+			todoRows.Scan(&todo.Id, &todo.Description, &todo.Status, &todo.ListId)
+			fetchedTodos = append(fetchedTodos, todo)
+		}
+
+		fetchedListJson, _ := json.Marshal(fetchedList)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(200)
 		w.Write(fetchedListJson)
 		return
+	}
+
+	if r.Method == http.MethodPut {
+		pathSlice := strings.Split(pathname, "/")
+
+		if pathSlice[1] == "createTodo" {
+			contentType := r.Header.Get("Content-Type")
+
+			if contentType != "application/json" {
+				errorResponse(w, "Content type is not JSON", http.StatusUnprocessableEntity)
+			}
+
+			newTodo := Todo{}
+
+			decoder := json.NewDecoder(r.Body)
+			err := decoder.Decode(&newTodo)
+
+			newTodo.ListId = pathSlice[0]
+			newTodo.Status = "PENDING"
+
+			if err != nil {
+				errorResponse(w, "Bad Request", http.StatusBadRequest)
+				return
+			}
+
+			insertTodoQuery := fmt.Sprintf(`INSERT INTO todos (description, listId) VALUES('%s', '%s')`, newTodo.Description, newTodo.ListId)
+
+			result, dbErr := db.Exec(insertTodoQuery)
+
+			if dbErr != nil {
+				errorResponse(w, "Unable to create row "+dbErr.Error(), http.StatusInternalServerError)
+				return
+			}
+
+			newTodoId, _ := result.LastInsertId()
+			newTodo.Id = int8(newTodoId)
+
+			newTodoJSON, _ := json.Marshal(newTodo)
+
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write(newTodoJSON)
+
+			return
+		}
 	}
 
 	http.NotFound(w, r)
@@ -48,14 +107,15 @@ func (p *ListHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type TodoHandler struct{}
 
 type List struct {
-	Id          int8 `json:"id"`
+	Id          int8   `json:"id"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
 }
 
 type Todo struct {
-	Id          int8 `json:"id"`
+	Id          int8   `json:"id"`
 	Description string `json:"description"`
+	Status      string `json:"status"`
 	ListId      string `json:"listId"`
 }
 
@@ -108,7 +168,7 @@ func main() {
 
 	initTableQuery := `
 CREATE TABLE IF NOT EXISTS lists (name TEXT, description TEXT, id INTEGER PRIMARY KEY AUTOINCREMENT);
-CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT, listId TEXT, FOREIGN KEY(listId) REFERENCES lists(id));
+CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, description TEXT, status TEXT DEFAULT 'PENDING',listId TEXT, FOREIGN KEY(listId) REFERENCES lists(id));
 `
 
 	_, initDbError := db.Exec(initTableQuery)
@@ -121,7 +181,31 @@ CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, descript
 		path := r.URL.Path[6:]
 
 		if path == "/" {
-			if r.Method == "GET" {
+			if r.Method == http.MethodGet {
+				rows, err := db.Query(`SELECT id, name, description FROM lists`)
+
+				if err != nil {
+					errorResponse(w, "Unable to get rows", http.StatusInternalServerError)
+				}
+
+				fetchedLists := []List{}
+
+				for rows.Next() {
+					list := List{}
+					scanErr := rows.Scan(&list.Id, &list.Name, &list.Description)
+					if scanErr != nil {
+						errorResponse(w, scanErr.Error(), http.StatusInternalServerError)
+						return
+					}
+
+					fetchedLists = append(fetchedLists, list)
+				}
+
+				fetchedListsJson, _ := json.Marshal(fetchedLists)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(200)
+				w.Write(fetchedListsJson)
+
 				return
 			}
 		}
@@ -173,25 +257,6 @@ CREATE TABLE IF NOT EXISTS todos (id INTEGER PRIMARY KEY AUTOINCREMENT, descript
 	})
 
 	newMux.Handle("/list/", &ListHandler{})
-
-	newMux.HandleFunc("/todos", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == "GET" {
-			return
-		}
-		if r.Method == "PUT" {
-			return
-		}
-		if r.Method == "PATCH" {
-			return
-		}
-		if r.Method == "DELETE" {
-			return
-		}
-		http.NotFound(w, r)
-		return
-	})
-
-	newMux.Handle("/todo/", &TodoHandler{})
 
 	log.Fatal(http.ListenAndServe(":4000", newMux))
 }
